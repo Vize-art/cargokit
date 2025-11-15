@@ -6,7 +6,6 @@ import 'package:github/github.dart';
 import 'package:hex/hex.dart';
 import 'package:logging/logging.dart';
 
-import 'android_environment.dart';
 import 'build_cmake.dart';
 import 'build_gradle.dart';
 import 'build_pod.dart';
@@ -238,9 +237,7 @@ Future<void> runMain(List<String> args) async {
     // Init logging before options are loaded
     initLogging();
 
-    if (Platform.environment['_CARGOKIT_NDK_LINK_TARGET'] != null) {
-      return AndroidEnvironment.clangLinkerWrapper(args);
-    }
+    // Removed linker wrapper logic - cargo-ndk handles this now
 
     final runner = CommandRunner('build_tool', 'Cargokit built_tool')
       ..addCommand(BuildPodCommand())

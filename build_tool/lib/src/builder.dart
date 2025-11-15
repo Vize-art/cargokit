@@ -142,31 +142,55 @@ class RustBuilder {
   Future<String> build() async {
     final extraArgs = _buildOptions?.flags ?? [];
     final manifestPath = path.join(environment.manifestDir, 'Cargo.toml');
-    runCommand(
-      'rustup',
-      [
-        'run',
-        _toolchain,
+
+    // For Android builds, use cargo-ndk
+    if (target.android != null) {
+      final buildEnv = await _buildEnvironment();
+      runCommand(
         'cargo',
-        (target.android == null && environment.glibcVersion != null)
-            ? 'zigbuild'
-            : 'build',
-        ...extraArgs,
-        '--manifest-path',
-        manifestPath,
-        '-p',
-        environment.crateInfo.packageName,
-        if (!environment.configuration.isDebug) '--release',
-        '--target',
-        target.rust +
-            ((target.android == null && environment.glibcVersion != null)
-                ? '.${environment.glibcVersion!}'
-                : ""),
-        '--target-dir',
-        environment.targetTempDir,
-      ],
-      environment: await _buildEnvironment(),
-    );
+        [
+          'ndk',
+          '-t',
+          target.android!,  // Use Android ABI name (e.g., arm64-v8a)
+          '-P',
+          buildEnv['_CARGOKIT_MIN_SDK_VERSION']!,
+          'build',
+          ...extraArgs,
+          '-p',
+          environment.crateInfo.packageName,
+          if (!environment.configuration.isDebug) '--release',
+          '--target-dir',
+          environment.targetTempDir,
+        ],
+        workingDirectory: environment.manifestDir,
+        environment: buildEnv,
+      );
+    } else {
+      // Non-Android builds
+      runCommand(
+        'rustup',
+        [
+          'run',
+          _toolchain,
+          'cargo',
+          (environment.glibcVersion != null) ? 'zigbuild' : 'build',
+          ...extraArgs,
+          '--manifest-path',
+          manifestPath,
+          '-p',
+          environment.crateInfo.packageName,
+          if (!environment.configuration.isDebug) '--release',
+          '--target',
+          target.rust +
+              ((environment.glibcVersion != null)
+                  ? '.${environment.glibcVersion!}'
+                  : ""),
+          '--target-dir',
+          environment.targetTempDir,
+        ],
+      );
+    }
+
     return path.join(
       environment.targetTempDir,
       target.rust,
@@ -194,13 +218,20 @@ class RustBuilder {
         sdkPath: sdkPath,
         ndkVersion: ndkVersion,
         minSdkVersion: minSdkVersion,
-        targetTempDir: environment.targetTempDir,
         target: target,
       );
+
+      // Install NDK if not already installed
       if (!env.ndkIsInstalled() && environment.javaHome != null) {
         env.installNdk(javaHome: environment.javaHome!);
       }
-      return env.buildEnvironment();
+
+      // Set ANDROID_NDK_HOME for cargo-ndk to use
+      return {
+        'ANDROID_NDK_HOME': env.ndkHome,
+        // Pass min SDK version for cargo-ndk -p argument
+        '_CARGOKIT_MIN_SDK_VERSION': env.effectiveMinSdkVersion.toString(),
+      };
     }
   }
 }

@@ -37,6 +37,23 @@
 
 **Fix**: Now only builds missing architectures, uses precompiled binaries for available ones.
 
+### 5. Migrated to cargo-ndk
+**Rationale**: Simplify Android NDK integration by using the official cargo-ndk tool instead of custom toolchain configuration.
+
+**Change**: Refactored Android build system to use `cargo ndk` command with ANDROID_NDK_HOME environment variable.
+
+**How it works**:
+- Removed custom NDK toolchain setup (CC, AR, CXX, linker environment variables)
+- Removed custom linker wrapper implementation
+- Now invokes `cargo ndk -t <abi> -p <min-sdk> build` for Android targets
+- Sets ANDROID_NDK_HOME to point to the NDK installation
+- Kept automatic NDK installation logic for convenience
+- Uses Android ABI names (arm64-v8a, armeabi-v7a, x86_64) directly
+
+**Requirements**:
+- Developers need to have `cargo-ndk` installed: `cargo install cargo-ndk`
+- cargo-ndk will automatically detect NDK from ANDROID_NDK_HOME
+
 ## Behavior Changes
 
 ### Development Builds (`flutter run`)
