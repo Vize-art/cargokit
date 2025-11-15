@@ -1,0 +1,51 @@
+// Helper script to detect connected device architecture
+// This can be included in plugin.gradle if needed
+
+def detectConnectedDeviceArchitecture() {
+    try {
+        def adbPath = android.sdkDirectory.path + "/platform-tools/adb"
+
+        // Get list of connected devices
+        def devicesOutput = new ByteArrayOutputStream()
+        exec {
+            commandLine adbPath, 'devices'
+            standardOutput = devicesOutput
+        }
+
+        def devices = devicesOutput.toString().readLines()
+            .findAll { it.contains('\tdevice') }
+            .collect { it.split('\t')[0] }
+
+        if (devices.isEmpty()) {
+            return null
+        }
+
+        // Get architecture of first connected device
+        def archOutput = new ByteArrayOutputStream()
+        exec {
+            commandLine adbPath, '-s', devices[0], 'shell', 'getprop', 'ro.product.cpu.abi'
+            standardOutput = archOutput
+        }
+
+        def abi = archOutput.toString().trim()
+
+        // Map Android ABI to Flutter platform name
+        switch(abi) {
+            case 'arm64-v8a':
+                return 'android-arm64'
+            case 'armeabi-v7a':
+                return 'android-arm'
+            case 'x86_64':
+                return 'android-x64'
+            case 'x86':
+                return 'android-x86'  // Will be filtered out since i686 is removed
+            default:
+                return null
+        }
+    } catch (Exception e) {
+        // ADB not available or no devices connected
+        return null
+    }
+}
+
+ext.detectConnectedDeviceArchitecture = this.&detectConnectedDeviceArchitecture

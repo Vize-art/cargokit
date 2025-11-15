@@ -20,9 +20,10 @@ class ManifestException {
 }
 
 class CrateInfo {
-  CrateInfo({required this.packageName});
+  CrateInfo({required this.packageName, required this.version});
 
   final String packageName;
+  final String version;
 
   static CrateInfo parseManifest(String manifest, {final String? fileName}) {
     final toml = TomlDocument.parse(manifest);
@@ -34,7 +35,11 @@ class CrateInfo {
     if (name == null) {
       throw ManifestException('Missing package name', fileName: fileName);
     }
-    return CrateInfo(packageName: name);
+    final version = package['version'];
+    if (version == null) {
+      throw ManifestException('Missing package version', fileName: fileName);
+    }
+    return CrateInfo(packageName: name, version: version);
   }
 
   static CrateInfo load(String manifestDir) {

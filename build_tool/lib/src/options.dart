@@ -112,12 +112,16 @@ extension on YamlMap {
 }
 
 class PrecompiledBinaries {
-  final String uriPrefix;
+  final String? uriPrefix;  // Now optional, not needed for private repos
   final PublicKey publicKey;
+  final String? repository;  // New: owner/repo format for gh CLI
+  final bool private;  // New: whether this is a private repository
 
   PrecompiledBinaries({
-    required this.uriPrefix,
+    this.uriPrefix,
     required this.publicKey,
+    this.repository,
+    required this.private,
   });
 
   static PublicKey _publicKeyFromHex(String key, SourceSpan? span) {
@@ -131,31 +135,91 @@ class PrecompiledBinaries {
 
   static PrecompiledBinaries parse(YamlNode node) {
     if (node case YamlMap(valueMap: Map<dynamic, YamlNode> map)) {
-      if (map
-          case {
-            'url_prefix': YamlNode urlPrefixNode,
-            'public_key': YamlNode publicKeyNode,
-          }) {
-        final urlPrefix = switch (urlPrefixNode) {
+      // public_key is always required
+      if (!map.containsKey('public_key')) {
+        throw SourceSpanException(
+            'Missing required field "public_key" in precompiled_binaries configuration.',
+            node.span);
+      }
+
+      final publicKey = switch (map['public_key']) {
+        YamlScalar(value: String publicKey) =>
+          _publicKeyFromHex(publicKey, map['public_key']!.span),
+        _ => throw SourceSpanException(
+            'Invalid public key value.', map['public_key']!.span),
+      };
+
+      // Check if this is a private repository configuration
+      final privateNode = map['private'];
+      final bool isPrivate = switch (privateNode) {
+        YamlScalar(value: bool value) => value,
+        YamlScalar(value: 'true') => true,
+        YamlScalar(value: 'false') => false,
+        null => false,  // Default to public if not specified
+        _ => throw SourceSpanException(
+            'Invalid private value. Must be true or false.', privateNode.span),
+      };
+
+      // For private repos, repository is required
+      if (isPrivate) {
+        if (!map.containsKey('repository')) {
+          throw SourceSpanException(
+              'Field "repository" is required when private is true.',
+              node.span);
+        }
+
+        final repository = switch (map['repository']) {
+          YamlScalar(value: String repo) => repo,
+          _ => throw SourceSpanException(
+              'Invalid repository value. Must be a string in "owner/repo" format.',
+              map['repository']!.span),
+        };
+
+        // Validate repository format
+        if (!repository.contains('/') || repository.split('/').length != 2) {
+          throw SourceSpanException(
+              'Invalid repository format. Must be "owner/repo" (e.g., "Vize-art/rustpowered").',
+              map['repository']!.span);
+        }
+
+        return PrecompiledBinaries(
+          uriPrefix: null,  // Not needed for private repos
+          publicKey: publicKey,
+          repository: repository,
+          private: true,
+        );
+      } else {
+        // For public repos, url_prefix is required
+        if (!map.containsKey('url_prefix')) {
+          throw SourceSpanException(
+              'Field "url_prefix" is required for public repositories.',
+              node.span);
+        }
+
+        final urlPrefix = switch (map['url_prefix']) {
           YamlScalar(value: String urlPrefix) => urlPrefix,
           _ => throw SourceSpanException(
-              'Invalid URL prefix value.', urlPrefixNode.span),
+              'Invalid URL prefix value.', map['url_prefix']!.span),
         };
-        final publicKey = switch (publicKeyNode) {
-          YamlScalar(value: String publicKey) =>
-            _publicKeyFromHex(publicKey, publicKeyNode.span),
+
+        // Repository is optional for public repos but can be provided
+        final repository = switch (map['repository']) {
+          YamlScalar(value: String repo) => repo,
+          null => null,
           _ => throw SourceSpanException(
-              'Invalid public key value.', publicKeyNode.span),
+              'Invalid repository value.', map['repository']!.span),
         };
+
         return PrecompiledBinaries(
           uriPrefix: urlPrefix,
           publicKey: publicKey,
+          repository: repository,
+          private: false,
         );
       }
     }
     throw SourceSpanException(
-        'Invalid precompiled binaries value. '
-        'Expected Map with "url_prefix" and "public_key".',
+        'Invalid precompiled binaries configuration. Expected a Map.',
         node.span);
   }
 }

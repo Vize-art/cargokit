@@ -24,5 +24,23 @@ void main() {
   test('parseCargoToml', () {
     final info = CrateInfo.parseManifest(_cargoToml);
     expect(info.packageName, 'super_native_extensions');
+    expect(info.version, '0.1.0');
+  });
+
+  test('throws when version is missing', () {
+    const manifestWithoutVersion = """
+[package]
+name = "test_crate"
+edition = "2021"
+""";
+
+    expect(
+      () => CrateInfo.parseManifest(manifestWithoutVersion),
+      throwsA(isA<ManifestException>().having(
+        (e) => e.message,
+        'message',
+        contains('Missing package version'),
+      )),
+    );
   });
 }

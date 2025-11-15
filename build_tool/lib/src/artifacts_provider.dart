@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path;
 
 import 'builder.dart';
 import 'crate_hash.dart';
+import 'gh_cli.dart';
 import 'options.dart';
 import 'precompile_binaries.dart';
 import 'rustup.dart';
@@ -61,7 +62,7 @@ class ArtifactProvider {
     }
 
     final rustup = Rustup();
-    for (final target in targets) {
+    for (final target in pendingTargets) {  // Only build missing targets
       final builder = RustBuilder(target: target, environment: environment);
       builder.prepare(rustup);
       _log.info('Building ${environment.crateInfo.packageName} for $target');
@@ -105,13 +106,21 @@ class ArtifactProvider {
     }
 
     final start = Stopwatch()..start();
+
+    // Get the version from Cargo.toml for version-based tags
+    final version = environment.crateInfo.version;
+    final tagName = 'v$version';
+    _log.info('Looking for precompiled binaries for version $version (tag: $tagName)');
+
+    // Still compute hash for cache directory and verification
     final crateHash = CrateHash.compute(environment.manifestDir,
         tempStorage: environment.targetTempDir);
     _log.fine(
         'Computed crate hash $crateHash in ${start.elapsedMilliseconds}ms');
 
+    // Use version in the cache directory path for better organization
     final downloadedArtifactsDir =
-        path.join(environment.targetTempDir, 'precompiled', crateHash);
+        path.join(environment.targetTempDir, 'precompiled', version, crateHash);
     Directory(downloadedArtifactsDir).createSync(recursive: true);
 
     final res = <Target, List<Artifact>>{};
@@ -124,6 +133,7 @@ class ArtifactProvider {
       );
       final artifactsForTarget = <Artifact>[];
 
+      bool allFound = true;
       for (final artifact in requiredArtifacts) {
         final fileName = PrecompileBinaries.fileName(target, artifact);
         final downloadedPath = path.join(downloadedArtifactsDir, fileName);
@@ -131,7 +141,7 @@ class ArtifactProvider {
           final signatureFileName =
               PrecompileBinaries.signatureFileName(target, artifact);
           await _tryDownloadArtifacts(
-            crateHash: crateHash,
+            version: version,  // Pass version instead of crateHash
             fileName: fileName,
             signatureFileName: signatureFileName,
             finalPath: downloadedPath,
@@ -143,14 +153,18 @@ class ArtifactProvider {
             finalFileName: artifact,
           ));
         } else {
+          allFound = false;
+          _log.warning('Missing precompiled artifact for $target: $artifact');
           break;
         }
       }
 
       // Only provide complete set of artifacts.
-      if (artifactsForTarget.length == requiredArtifacts.length) {
+      if (allFound && artifactsForTarget.length == requiredArtifacts.length) {
         _log.fine('Found precompiled artifacts for $target');
         res[target] = artifactsForTarget;
+      } else if (!allFound) {
+        _log.info('Incomplete precompiled artifacts for $target - will build from source');
       }
     }
 
@@ -179,20 +193,128 @@ class ArtifactProvider {
   }
 
   Future<void> _tryDownloadArtifacts({
-    required String crateHash,
+    required String version,
     required String fileName,
     required String signatureFileName,
     required String finalPath,
   }) async {
     final precompiledBinaries = environment.crateOptions.precompiledBinaries!;
-    final prefix = precompiledBinaries.uriPrefix;
-    final url = Uri.parse('$prefix$crateHash/$fileName');
-    final signatureUrl = Uri.parse('$prefix$crateHash/$signatureFileName');
+
+    if (precompiledBinaries.private) {
+      // Use gh CLI for private repositories
+      await _downloadViaGhCli(
+        version: version,
+        fileName: fileName,
+        signatureFileName: signatureFileName,
+        finalPath: finalPath,
+      );
+    } else {
+      // Use HTTP for public repositories (backward compatibility)
+      await _downloadViaHttp(
+        version: version,
+        fileName: fileName,
+        signatureFileName: signatureFileName,
+        finalPath: finalPath,
+      );
+    }
+  }
+
+  Future<void> _downloadViaGhCli({
+    required String version,
+    required String fileName,
+    required String signatureFileName,
+    required String finalPath,
+  }) async {
+    final precompiledBinaries = environment.crateOptions.precompiledBinaries!;
+    final repository = precompiledBinaries.repository!;
+    final tagName = 'v$version';
+
+    try {
+      // Validate gh CLI setup
+      await GhCliDownloader.validateSetup(repository: repository);
+
+      // Create temporary directory for downloads
+      final tempDir = Directory.systemTemp.createTempSync('cargokit_download_');
+
+      try {
+        // Download both the binary and signature files
+        _log.fine('Downloading $fileName and $signatureFileName from $repository@$tagName via gh CLI');
+
+        // Download the binary
+        await GhCliDownloader.downloadAsset(
+          repository: repository,
+          tag: tagName,
+          pattern: fileName,
+          outputDir: tempDir.path,
+        );
+
+        // Download the signature
+        await GhCliDownloader.downloadAsset(
+          repository: repository,
+          tag: tagName,
+          pattern: signatureFileName,
+          outputDir: tempDir.path,
+        );
+
+        // Read the downloaded files
+        final binaryPath = path.join(tempDir.path, fileName);
+        final signaturePath = path.join(tempDir.path, signatureFileName);
+
+        if (!File(binaryPath).existsSync()) {
+          _log.warning('Binary file not found after download: $binaryPath');
+          return;
+        }
+
+        if (!File(signaturePath).existsSync()) {
+          _log.warning('Signature file not found after download: $signaturePath');
+          return;
+        }
+
+        final binaryBytes = File(binaryPath).readAsBytesSync();
+        final signatureBytes = File(signaturePath).readAsBytesSync();
+
+        // Verify signature
+        if (verify(precompiledBinaries.publicKey, binaryBytes, signatureBytes)) {
+          File(finalPath).writeAsBytesSync(binaryBytes);
+          _log.fine('Successfully downloaded and verified $fileName');
+        } else {
+          _log.shout('Signature verification failed for $fileName! Ignoring binary.');
+        }
+      } finally {
+        // Clean up temporary directory
+        tempDir.deleteSync(recursive: true);
+      }
+    } catch (e) {
+      if (e is AssetNotFoundException) {
+        _log.warning('Precompiled binaries not available for version $version: ${e.message}');
+      } else if (e is SetupException || e is AuthenticationException) {
+        _log.severe('gh CLI setup issue: ${e.toString()}');
+        _log.severe('Please ensure gh is installed and authenticated. Run: gh auth status');
+      } else {
+        _log.severe('Failed to download via gh CLI: $e');
+      }
+    }
+  }
+
+  Future<void> _downloadViaHttp({
+    required String version,
+    required String fileName,
+    required String signatureFileName,
+    required String finalPath,
+  }) async {
+    final precompiledBinaries = environment.crateOptions.precompiledBinaries!;
+    final prefix = precompiledBinaries.uriPrefix!;
+
+    // Use version tag instead of hash in URL
+    final tagName = 'v$version';
+    final url = Uri.parse('$prefix$tagName/$fileName');
+    final signatureUrl = Uri.parse('$prefix$tagName/$signatureFileName');
+
     _log.fine('Downloading signature from $signatureUrl');
     final signature = await _get(signatureUrl);
     if (signature.statusCode == 404) {
       _log.warning(
-          'Precompiled binaries not available for crate hash $crateHash ($fileName)');
+          'Precompiled binaries not available for version $version ($fileName)');
       return;
     }
     if (signature.statusCode != 200) {
@@ -209,8 +331,9 @@ class ArtifactProvider {
     if (verify(
         precompiledBinaries.publicKey, res.bodyBytes, signature.bodyBytes)) {
       File(finalPath).writeAsBytesSync(res.bodyBytes);
+      _log.fine('Successfully downloaded and verified $fileName');
     } else {
-      _log.shout('Signature verification failed! Ignoring binary.');
+      _log.shout('Signature verification failed for $fileName! Ignoring binary.');
     }
   }
 }

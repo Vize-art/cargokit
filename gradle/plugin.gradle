@@ -5,6 +5,95 @@ CargoKitPlugin.file = buildscript.sourceFile
 
 apply plugin: CargoKitPlugin
 
+// Helper function to detect target device architecture from Flutter
+def detectTargetDeviceArchitecture(project) {
+    try {
+        // Check if Flutter is targeting a specific device
+        // This is set when flutter run -d <device_id> is used
+        def targetDeviceId = System.getenv("FLUTTER_TARGET_DEVICE_ID")
+
+        // Also check for emulator flag
+        def isEmulator = System.getenv("FLUTTER_EMULATOR") == "true"
+
+        // Check project properties set by Flutter
+        if (project.hasProperty('target-platform')) {
+            // Flutter explicitly specified the platform
+            return project.property('target-platform')
+        }
+
+        // If no specific device targeted, check what Flutter run is actually using
+        // Flutter sets the ANDROID_EMULATOR environment variable when targeting emulator
+        if (System.getenv("ANDROID_EMULATOR") != null || isEmulator) {
+            // Building for emulator - use x64
+            return 'android-x64'
+        }
+
+        // Try to detect based on ADB if we have a specific device ID
+        def adbPath = project.android.sdkDirectory.path + "/platform-tools/adb"
+
+        if (targetDeviceId != null) {
+            // Get architecture of specific device
+            def archOutput = new ByteArrayOutputStream()
+            project.exec {
+                commandLine adbPath, '-s', targetDeviceId, 'shell', 'getprop', 'ro.product.cpu.abi'
+                standardOutput = archOutput
+            }
+
+            def abi = archOutput.toString().trim()
+
+            // Map Android ABI to Flutter platform name
+            switch(abi) {
+                case 'arm64-v8a':
+                    return 'android-arm64'
+                case 'armeabi-v7a':
+                    return 'android-arm'
+                case 'x86_64':
+                    return 'android-x64'
+            }
+        }
+
+        // Last resort: try to detect any connected physical device
+        // But only if we're sure we're not targeting an emulator
+        if (!isEmulator) {
+            def devicesOutput = new ByteArrayOutputStream()
+            project.exec {
+                commandLine adbPath, 'devices'
+                standardOutput = devicesOutput
+            }
+
+            // Find physical devices (exclude emulators)
+            def devices = devicesOutput.toString().readLines()
+                .findAll { it.contains('\tdevice') && !it.contains('emulator-') }
+                .collect { it.split('\t')[0] }
+
+            if (devices.size() == 1) {
+                // Only one physical device connected, probably targeting it
+                def archOutput = new ByteArrayOutputStream()
+                project.exec {
+                    commandLine adbPath, '-s', devices[0], 'shell', 'getprop', 'ro.product.cpu.abi'
+                    standardOutput = archOutput
+                }
+
+                def abi = archOutput.toString().trim()
+
+                switch(abi) {
+                    case 'arm64-v8a':
+                        return 'android-arm64'
+                    case 'armeabi-v7a':
+                        return 'android-arm'
+                    case 'x86_64':
+                        return 'android-x64'
+                }
+            }
+        }
+
+        return null
+    } catch (Exception e) {
+        // ADB not available or detection failed
+        return null
+    }
+}
+
 class CargoKitExtension {
     String manifestDir; // Relative path to folder containing Cargo.toml
     String libname; // Library name within Cargo.toml. Must be a cdylib
@@ -131,11 +220,52 @@ class CargoKitPlugin implements Plugin<Project> {
 
             def platforms = com.flutter.gradle.FlutterPluginUtils.getTargetPlatforms(project).collect()
 
-            // Same thing addFlutterDependencies does in flutter.gradle
+            // Smart architecture detection for development builds
             if (buildType == "debug") {
-                platforms.add("android-x86")
-                platforms.add("android-x64")
+                // Check if Flutter is in single-device mode
+                // When running with a specific device, Flutter should only pass one platform
+                def originalPlatformCount = platforms.size()
+
+                // For debug builds, Flutter might add extra platforms for compatibility
+                // We want to detect the actual target device
+                def targetPlatform = null
+
+                // Check various properties that Flutter might set
+                if (project.hasProperty('target-platform')) {
+                    targetPlatform = project.property('target-platform')
+                } else if (project.hasProperty('flutter.target-platform')) {
+                    targetPlatform = project.property('flutter.target-platform')
+                }
+
+                // If we have a specific target, use only that
+                if (targetPlatform != null) {
+                    println("CargoKit: Debug build for specific platform: ${targetPlatform}")
+                    platforms = [targetPlatform]
+                } else {
+                    // Try to intelligently detect based on what we know
+                    // Check if this is likely an emulator build
+                    def hasX64 = platforms.contains('android-x64')
+                    def hasArm64 = platforms.contains('android-arm64')
+
+                    // If we have both x64 and arm64, this is likely Flutter adding both for compatibility
+                    // Try to detect which one is actually being used
+                    if (hasX64 && hasArm64 && originalPlatformCount > 1) {
+                        // Try our detection function
+                        def detectedArch = detectTargetDeviceArchitecture(project)
+                        if (detectedArch != null) {
+                            println("CargoKit: Detected actual target: ${detectedArch}")
+                            platforms = [detectedArch]
+                        } else {
+                            // Can't detect, keep both but log
+                            println("CargoKit: Debug build with multiple platforms (${platforms}), couldn't detect specific target")
+                        }
+                    } else if (originalPlatformCount == 1) {
+                        // Single platform already, use it
+                        println("CargoKit: Debug build for single platform: ${platforms[0]}")
+                    }
+                }
             }
+            // For release builds, use all platforms as determined by Flutter
 
             // The task name depends on plugin properties, which are not available
             // at this point

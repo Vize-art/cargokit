@@ -21,7 +21,7 @@ class BuildGradle {
       final target = Target.forFlutterName(arch);
       if (target == null) {
         throw Exception(
-            "Unknown darwin target or platform: $arch, ${Environment.darwinPlatformName}");
+            "Unknown android target: $arch");
       }
       return target;
     }).toList();

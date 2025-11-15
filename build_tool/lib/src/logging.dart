@@ -29,7 +29,7 @@ void _log(LogRecord rec) {
 }
 
 void initLogging() {
-  Logger.root.level = Level.INFO;
+  Logger.root.level = Level.FINEST;
   Logger.root.onRecord.listen((LogRecord rec) {
     final lines = rec.message.split('\n');
     for (final line in lines) {

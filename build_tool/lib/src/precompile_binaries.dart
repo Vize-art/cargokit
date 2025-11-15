@@ -12,6 +12,7 @@ import 'crate_hash.dart';
 import 'options.dart';
 import 'rustup.dart';
 import 'target.dart';
+import 'version_validator.dart';
 
 final _log = Logger('precompile_binaries');
 
@@ -61,25 +62,43 @@ class PrecompileBinaries {
 
     _log.info('Precompiling binaries for $targets');
 
-    final hash = CrateHash.compute(manifestDir);
-    _log.info('Computed crate hash: $hash');
-
-    final String tagName = 'precompiled_$hash';
-
-    final github = GitHub(auth: Authentication.withToken(githubToken));
-    final repo = github.repositories;
-    final release = await _getOrCreateRelease(
-      repo: repo,
-      tagName: tagName,
-      packageName: crateInfo.packageName,
-      hash: hash,
-    );
-
+    // Create temp directory for build and validation
     final tempDir = this.tempDir != null
         ? Directory(this.tempDir!)
         : Directory.systemTemp.createTempSync('precompiled_');
 
     tempDir.createSync(recursive: true);
+
+    // Validate version hasn't been used with different content
+    final isValid = await VersionValidator.validate(
+      manifestDir: manifestDir,
+      tempDir: tempDir.path,
+    );
+
+    if (!isValid) {
+      throw Exception(
+        'Version validation failed. The version ${crateInfo.version} has been '
+        'used before with different crate content. Please bump the version in '
+        'Cargo.toml before publishing new binaries.',
+      );
+    }
+
+    // Still compute hash for integrity verification
+    final hash = CrateHash.compute(manifestDir);
+    _log.info('Computed crate hash: $hash');
+
+    // Use version-based tag instead of hash-based
+    final String tagName = 'v${crateInfo.version}';
+    _log.info('Using version tag: $tagName');
+
+    final github = GitHub(auth: Authentication.withToken(githubToken));
+    final repo = github.repositories;
+    final release = await _getExistingRelease(
+      repo: repo,
+      tagName: tagName,
+      packageName: crateInfo.packageName,
+      hash: hash,
+    );
 
     final crateOptions = CargokitCrateOptions.load(
       manifestDir: manifestDir,
@@ -173,30 +192,23 @@ class PrecompileBinaries {
     tempDir.deleteSync(recursive: true);
   }
 
-  Future<Release> _getOrCreateRelease({
+  Future<Release> _getExistingRelease({
     required RepositoriesService repo,
     required String tagName,
     required String packageName,
     required String hash,
   }) async {
-    Release release;
     try {
-      _log.info('Fetching release $tagName');
-      release = await repo.getReleaseByTagName(repositorySlug, tagName);
+      _log.info('Fetching release for tag $tagName');
+      final release = await repo.getReleaseByTagName(repositorySlug, tagName);
+      _log.info('Found existing release for tag $tagName');
+      return release;
     } on ReleaseNotFound {
-      _log.info('Release not found - creating release $tagName');
-      release = await repo.createRelease(
-          repositorySlug,
-          CreateRelease.from(
-            tagName: tagName,
-            name: 'Precompiled binaries ${hash.substring(0, 8)}',
-            targetCommitish: null,
-            isDraft: false,
-            isPrerelease: false,
-            body: 'Precompiled binaries for crate $packageName, '
-                'crate hash $hash.',
-          ));
+      throw Exception(
+        'Release not found for tag $tagName. Please ensure the tag and release '
+        'have been created by your publish script before running precompile-binaries. '
+        'The tag should match the version in Cargo.toml (v${tagName.substring(1)}).'
+      );
     }
-    return release;
   }
 }
