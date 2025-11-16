@@ -140,12 +140,29 @@ class ArtifactProvider {
         if (!File(downloadedPath).existsSync()) {
           final signatureFileName =
               PrecompileBinaries.signatureFileName(target, artifact);
+
+          // Try downloading uncompressed artifact first
           await _tryDownloadArtifacts(
-            version: version,  // Pass version instead of crateHash
+            version: version,
             fileName: fileName,
             signatureFileName: signatureFileName,
             finalPath: downloadedPath,
+            compressed: false,
           );
+
+          // If uncompressed not found, try compressed variant
+          if (!File(downloadedPath).existsSync()) {
+            final compressedFileName = PrecompileBinaries.fileName(target, artifact, compressed: true);
+            final compressedSignatureFileName =
+                PrecompileBinaries.signatureFileName(target, artifact, compressed: true);
+            await _tryDownloadArtifacts(
+              version: version,
+              fileName: compressedFileName,
+              signatureFileName: compressedSignatureFileName,
+              finalPath: downloadedPath,
+              compressed: true,
+            );
+          }
         }
         if (File(downloadedPath).existsSync()) {
           artifactsForTarget.add(Artifact(
@@ -169,6 +186,21 @@ class ArtifactProvider {
     }
 
     return res;
+  }
+
+  /// Decompress a zstd-compressed file
+  Future<void> _decompressFile(String compressedPath, String outputPath) async {
+    final result = await Process.run('zstd', [
+      '-d', // Decompress
+      '-f', // Force overwrite
+      compressedPath,
+      '-o', // Output to specific path
+      outputPath,
+    ]);
+
+    if (result.exitCode != 0) {
+      throw Exception('zstd decompression failed: ${result.stderr}');
+    }
   }
 
   static Future<Response> _get(Uri url, {Map<String, String>? headers}) async {
@@ -197,6 +229,7 @@ class ArtifactProvider {
     required String fileName,
     required String signatureFileName,
     required String finalPath,
+    required bool compressed,
   }) async {
     final precompiledBinaries = environment.crateOptions.precompiledBinaries!;
 
@@ -207,6 +240,7 @@ class ArtifactProvider {
         fileName: fileName,
         signatureFileName: signatureFileName,
         finalPath: finalPath,
+        compressed: compressed,
       );
     } else {
       // Use HTTP for public repositories (backward compatibility)
@@ -215,6 +249,7 @@ class ArtifactProvider {
         fileName: fileName,
         signatureFileName: signatureFileName,
         finalPath: finalPath,
+        compressed: compressed,
       );
     }
   }
@@ -224,6 +259,7 @@ class ArtifactProvider {
     required String fileName,
     required String signatureFileName,
     required String finalPath,
+    required bool compressed,
   }) async {
     final precompiledBinaries = environment.crateOptions.precompiledBinaries!;
     final repository = precompiledBinaries.repository!;
@@ -273,9 +309,15 @@ class ArtifactProvider {
         final binaryBytes = File(binaryPath).readAsBytesSync();
         final signatureBytes = File(signaturePath).readAsBytesSync();
 
-        // Verify signature
+        // Verify signature (signature is of the compressed file if compressed)
         if (verify(precompiledBinaries.publicKey, binaryBytes, signatureBytes)) {
-          File(finalPath).writeAsBytesSync(binaryBytes);
+          if (compressed) {
+            // Decompress the file
+            _log.fine('Decompressing $fileName');
+            await _decompressFile(binaryPath, finalPath);
+          } else {
+            File(finalPath).writeAsBytesSync(binaryBytes);
+          }
           _log.fine('Successfully downloaded and verified $fileName');
         } else {
           _log.shout('Signature verification failed for $fileName! Ignoring binary.');
@@ -301,6 +343,7 @@ class ArtifactProvider {
     required String fileName,
     required String signatureFileName,
     required String finalPath,
+    required bool compressed,
   }) async {
     final precompiledBinaries = environment.crateOptions.precompiledBinaries!;
     final prefix = precompiledBinaries.uriPrefix!;
@@ -330,7 +373,20 @@ class ArtifactProvider {
     }
     if (verify(
         precompiledBinaries.publicKey, res.bodyBytes, signature.bodyBytes)) {
-      File(finalPath).writeAsBytesSync(res.bodyBytes);
+      if (compressed) {
+        // Write compressed data to temporary file and decompress
+        final tempDir = Directory.systemTemp.createTempSync('cargokit_decompress_');
+        try {
+          final compressedPath = path.join(tempDir.path, fileName);
+          File(compressedPath).writeAsBytesSync(res.bodyBytes);
+          _log.fine('Decompressing $fileName');
+          await _decompressFile(compressedPath, finalPath);
+        } finally {
+          tempDir.deleteSync(recursive: true);
+        }
+      } else {
+        File(finalPath).writeAsBytesSync(res.bodyBytes);
+      }
       _log.fine('Successfully downloaded and verified $fileName');
     } else {
       _log.shout('Signature verification failed for $fileName! Ignoring binary.');

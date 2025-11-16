@@ -138,6 +138,12 @@ class PrecompileBinariesCommand extends Command {
         help: 'GLIBC version to use for linux builds',
       )
       ..addFlag(
+        'compress',
+        defaultsTo: false,
+        help: 'Compress binaries using zstd before signing.\n'
+            'Requires zstd binary to be available in PATH.',
+      )
+      ..addFlag(
         "verbose",
         abbr: "v",
         defaultsTo: false,
@@ -222,6 +228,8 @@ class PrecompileBinariesCommand extends Command {
       }
       return res;
     }).toList(growable: false);
+    final compress = argResults!['compress'] as bool;
+
     final precompileBinaries = PrecompileBinaries(
       privateKey: PrivateKey(privateKey),
       githubToken: githubToken,
@@ -234,6 +242,7 @@ class PrecompileBinariesCommand extends Command {
       androidMinSdkVersion: androidMinSdkVersion,
       tempDir: argResults!['temp-dir'] as String?,
       glibcVersion: argResults!['glibc-version'] as String?,
+      compress: compress,
     );
 
     await precompileBinaries.run();

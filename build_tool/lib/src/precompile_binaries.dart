@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ed25519_edwards/ed25519_edwards.dart';
 import 'package:github/github.dart';
@@ -29,6 +30,7 @@ class PrecompileBinaries {
     this.androidMinSdkVersion,
     this.tempDir,
     this.glibcVersion,
+    this.compress = false,
   }) : assert(
           (repositorySlug != null && githubToken != null) || outputDir != null,
           'Either repositorySlug and githubToken must be provided for upload, '
@@ -46,16 +48,57 @@ class PrecompileBinaries {
   final int? androidMinSdkVersion;
   final String? tempDir;
   final String? glibcVersion;
+  final bool compress;
 
-  static String fileName(Target target, String name) {
-    return '${target.rust}_$name';
+  static String fileName(Target target, String name, {bool compressed = false}) {
+    final base = '${target.rust}_$name';
+    return compressed ? '$base.zst' : base;
   }
 
-  static String signatureFileName(Target target, String name) {
-    return '${target.rust}_$name.sig';
+  static String signatureFileName(Target target, String name, {bool compressed = false}) {
+    return '${fileName(target, name, compressed: compressed)}.sig';
+  }
+
+  /// Compress a file using zstd
+  Future<Uint8List> _compressFile(String filePath) async {
+    final outputPath = '$filePath.zst';
+
+    // Run zstd to compress the file
+    final result = await Process.run('zstd', [
+      '-f', // Force overwrite
+      '--rm', // Remove source file after compression
+      filePath,
+    ]);
+
+    if (result.exitCode != 0) {
+      throw Exception('zstd compression failed: ${result.stderr}');
+    }
+
+    final compressedFile = File(outputPath);
+    if (!compressedFile.existsSync()) {
+      throw Exception('Compressed file not found: $outputPath');
+    }
+
+    return Uint8List.fromList(compressedFile.readAsBytesSync());
   }
 
   Future<void> run() async {
+    // Check if zstd is available when compression is enabled
+    if (compress) {
+      try {
+        final result = await Process.run('zstd', ['--version']);
+        if (result.exitCode != 0) {
+          throw Exception('zstd binary is not available');
+        }
+        _log.info('Using zstd for compression');
+      } catch (e) {
+        throw Exception(
+          'Compression enabled but zstd is not available in PATH. '
+          'Please install zstd: https://github.com/facebook/zstd'
+        );
+      }
+    }
+
     final crateInfo = CrateInfo.load(manifestDir);
 
     final targets = List.of(this.targets);
@@ -66,7 +109,7 @@ class PrecompileBinaries {
       ]);
     }
 
-    _log.info('Precompiling binaries for $targets');
+    _log.info('Precompiling binaries for $targets${compress ? ' (compressed)' : ''}');
 
     // Create temp directory for build and validation
     final tempDir = this.tempDir != null
@@ -150,7 +193,7 @@ class PrecompileBinaries {
       // Only check for existing artifacts if we're uploading
       if (repositorySlug != null) {
         if (artifactNames.every((name) {
-          final fileName = PrecompileBinaries.fileName(target, name);
+          final fileName = PrecompileBinaries.fileName(target, name, compressed: compress);
           return (release!.assets ?? []).any((e) => e.name == fileName);
         })) {
           _log.info("All artifacts for $target already exist - skipping");
@@ -174,15 +217,23 @@ class PrecompileBinaries {
             throw Exception('Missing artifact: ${file.path}');
           }
 
-          final data = file.readAsBytesSync();
+          // Read and optionally compress the data
+          Uint8List data;
+          if (compress) {
+            _log.info('Compressing ${file.path}');
+            data = await _compressFile(file.path);
+          } else {
+            data = Uint8List.fromList(file.readAsBytesSync());
+          }
+
           final create = CreateReleaseAsset(
-            name: PrecompileBinaries.fileName(target, name),
+            name: PrecompileBinaries.fileName(target, name, compressed: compress),
             contentType: "application/octet-stream",
             assetData: data,
           );
           final signature = sign(privateKey, data);
           final signatureCreate = CreateReleaseAsset(
-            name: signatureFileName(target, name),
+            name: signatureFileName(target, name, compressed: compress),
             contentType: "application/octet-stream",
             assetData: signature,
           );
@@ -221,7 +272,15 @@ class PrecompileBinaries {
             throw Exception('Missing artifact: ${file.path}');
           }
 
-          final data = file.readAsBytesSync();
+          // Read and optionally compress the data
+          Uint8List data;
+          if (compress) {
+            _log.info('Compressing ${file.path}');
+            data = await _compressFile(file.path);
+          } else {
+            data = Uint8List.fromList(file.readAsBytesSync());
+          }
+
           final signature = sign(privateKey, data);
 
           bool verified = verify(public(privateKey), data, signature);
@@ -230,13 +289,13 @@ class PrecompileBinaries {
           }
 
           // Copy artifact to output directory
-          final outputFileName = PrecompileBinaries.fileName(target, name);
+          final outputFileName = PrecompileBinaries.fileName(target, name, compressed: compress);
           final outputFile = File(path.join(outputDir!, outputFileName));
           outputFile.writeAsBytesSync(data);
           _log.info('Copied: $outputFileName');
 
           // Copy signature to output directory
-          final signatureOutputFileName = signatureFileName(target, name);
+          final signatureOutputFileName = signatureFileName(target, name, compressed: compress);
           final signatureOutputFile = File(path.join(outputDir!, signatureOutputFileName));
           signatureOutputFile.writeAsBytesSync(signature);
           _log.info('Copied: $signatureOutputFileName');
