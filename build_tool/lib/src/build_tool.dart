@@ -98,8 +98,15 @@ class PrecompileBinariesCommand extends Command {
     argParser
       ..addOption(
         'repository',
-        mandatory: true,
-        help: 'Github repository slug in format owner/name',
+        help: 'Github repository slug in format owner/name.\n'
+            'Used for uploading binaries to GitHub releases.\n'
+            'Mutually exclusive with --output.',
+      )
+      ..addOption(
+        'output',
+        help: 'Directory to move built artifacts to.\n'
+            'If directory does not exist, it will be created.\n'
+            'Mutually exclusive with --repository.',
       )
       ..addOption(
         'manifest-dir',
@@ -142,10 +149,11 @@ class PrecompileBinariesCommand extends Command {
   final name = 'precompile-binaries';
 
   @override
-  final description = 'Prebuild and upload binaries\n'
-      'Private key must be passed through PRIVATE_KEY environment variable. '
-      'Use gen_key through generate priave key.\n'
-      'Github token must be passed as GITHUB_TOKEN environment variable.\n';
+  final description = 'Prebuild binaries and either upload them or save to output directory.\n'
+      'Private key must be passed through PRIVATE_KEY environment variable for signing. '
+      'Use gen-key to generate a private key.\n'
+      'When using --repository: GITHUB_TOKEN environment variable is required for upload.\n'
+      'Either --repository or --output must be specified, but not both.\n';
 
   @override
   Future<void> run() async {
@@ -154,14 +162,40 @@ class PrecompileBinariesCommand extends Command {
       enableVerboseLogging();
     }
 
+    // Validate mutually exclusive options
+    final repository = argResults!['repository'] as String?;
+    final output = argResults!['output'] as String?;
+
+    if (repository == null && output == null) {
+      throw ArgumentError(
+        'Either --repository or --output must be specified.\n'
+        'Use --repository to upload binaries to GitHub releases.\n'
+        'Use --output to save binaries to a local directory.'
+      );
+    }
+
+    if (repository != null && output != null) {
+      throw ArgumentError(
+        'Cannot specify both --repository and --output.\n'
+        'Use --repository to upload binaries to GitHub releases.\n'
+        'Use --output to save binaries to a local directory.'
+      );
+    }
+
     final privateKeyString = Platform.environment['PRIVATE_KEY'];
     if (privateKeyString == null) {
       throw ArgumentError('Missing PRIVATE_KEY environment variable');
     }
+
+    // GITHUB_TOKEN is only required when uploading to repository
     final githubToken = Platform.environment['GITHUB_TOKEN'];
-    if (githubToken == null) {
-      throw ArgumentError('Missing GITHUB_TOKEN environment variable');
+    if (repository != null && githubToken == null) {
+      throw ArgumentError(
+        'Missing GITHUB_TOKEN environment variable.\n'
+        'Required when using --repository for uploading binaries.'
+      );
     }
+
     final privateKey = HEX.decode(privateKeyString);
     if (privateKey.length != 64) {
       throw ArgumentError('Private key must be 64 bytes long');
@@ -192,7 +226,8 @@ class PrecompileBinariesCommand extends Command {
       privateKey: PrivateKey(privateKey),
       githubToken: githubToken,
       manifestDir: manifestDir,
-      repositorySlug: RepositorySlug.full(argResults!['repository'] as String),
+      repositorySlug: repository != null ? RepositorySlug.full(repository) : null,
+      outputDir: output,
       targets: targets,
       androidSdkLocation: argResults!['android-sdk-location'] as String?,
       androidNdkVersion: argResults!['android-ndk-version'] as String?,
