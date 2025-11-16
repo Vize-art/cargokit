@@ -158,7 +158,7 @@ class PrecompileBinariesCommand extends Command {
   final description = 'Prebuild binaries and either upload them or save to output directory.\n'
       'Private key must be passed through PRIVATE_KEY environment variable for signing. '
       'Use gen-key to generate a private key.\n'
-      'When using --repository: GITHUB_TOKEN environment variable is required for upload.\n'
+      'When using --repository: gh CLI must be installed and authenticated for upload.\n'
       'Either --repository or --output must be specified, but not both.\n';
 
   @override
@@ -193,15 +193,6 @@ class PrecompileBinariesCommand extends Command {
       throw ArgumentError('Missing PRIVATE_KEY environment variable');
     }
 
-    // GITHUB_TOKEN is only required when uploading to repository
-    final githubToken = Platform.environment['GITHUB_TOKEN'];
-    if (repository != null && githubToken == null) {
-      throw ArgumentError(
-        'Missing GITHUB_TOKEN environment variable.\n'
-        'Required when using --repository for uploading binaries.'
-      );
-    }
-
     final privateKey = HEX.decode(privateKeyString);
     if (privateKey.length != 64) {
       throw ArgumentError('Private key must be 64 bytes long');
@@ -232,7 +223,6 @@ class PrecompileBinariesCommand extends Command {
 
     final precompileBinaries = PrecompileBinaries(
       privateKey: PrivateKey(privateKey),
-      githubToken: githubToken,
       manifestDir: manifestDir,
       repositorySlug: repository != null ? RepositorySlug.full(repository) : null,
       outputDir: output,
