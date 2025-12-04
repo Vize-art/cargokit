@@ -5,7 +5,6 @@ import 'package:http/http.dart';
 
 import 'artifacts_provider.dart';
 import 'cargo.dart';
-import 'crate_hash.dart';
 import 'gh_cli.dart';
 import 'options.dart';
 import 'precompile_binaries.dart';
@@ -30,10 +29,6 @@ class VerifyBinaries {
       final version = crateInfo.version;
       final tagName = 'v$version';
       stdout.writeln('Version: $version (tag: $tagName)');
-
-      // Still compute hash for informational purposes
-      final crateHash = CrateHash.compute(manifestDir);
-      stdout.writeln('Crate hash: $crateHash');
 
       if (precompiledBinaries.private) {
         // For private repositories, use gh CLI to verify

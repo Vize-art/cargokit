@@ -6,7 +6,6 @@ import 'package:logging/logging.dart';
 import 'package:path/path.dart' as path;
 
 import 'builder.dart';
-import 'crate_hash.dart';
 import 'gh_cli.dart';
 import 'options.dart';
 import 'precompile_binaries.dart';
@@ -105,22 +104,14 @@ class ArtifactProvider {
       return {};
     }
 
-    final start = Stopwatch()..start();
-
     // Get the version from Cargo.toml for version-based tags
     final version = environment.crateInfo.version;
     final tagName = 'v$version';
     _log.info('Looking for precompiled binaries for version $version (tag: $tagName)');
 
-    // Still compute hash for cache directory and verification
-    final crateHash = CrateHash.compute(environment.manifestDir,
-        tempStorage: environment.targetTempDir);
-    _log.fine(
-        'Computed crate hash $crateHash in ${start.elapsedMilliseconds}ms');
-
-    // Use version in the cache directory path for better organization
+    // Use version in the cache directory path
     final downloadedArtifactsDir =
-        path.join(environment.targetTempDir, 'precompiled', version, crateHash);
+        path.join(environment.targetTempDir, 'precompiled', version);
     Directory(downloadedArtifactsDir).createSync(recursive: true);
 
     final res = <Target, List<Artifact>>{};

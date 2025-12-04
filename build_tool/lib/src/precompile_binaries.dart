@@ -9,11 +9,9 @@ import 'package:path/path.dart' as path;
 import 'artifacts_provider.dart';
 import 'builder.dart';
 import 'cargo.dart';
-import 'crate_hash.dart';
 import 'options.dart';
 import 'rustup.dart';
 import 'target.dart';
-import 'version_validator.dart';
 
 final _log = Logger('precompile_binaries');
 
@@ -116,27 +114,7 @@ class PrecompileBinaries {
 
     tempDir.createSync(recursive: true);
 
-    // Validate version hasn't been used with different content (only when uploading)
-    if (repositorySlug != null) {
-      final isValid = await VersionValidator.validate(
-        manifestDir: manifestDir,
-        tempDir: tempDir.path,
-      );
-
-      if (!isValid) {
-        throw Exception(
-          'Version validation failed. The version ${crateInfo.version} has been '
-          'used before with different crate content. Please bump the version in '
-          'Cargo.toml before publishing new binaries.',
-        );
-      }
-    }
-
-    // Still compute hash for integrity verification
-    final hash = CrateHash.compute(manifestDir);
-    _log.info('Computed crate hash: $hash');
-
-    // Use version-based tag instead of hash-based
+    // Use version-based tag
     final String tagName = 'v${crateInfo.version}';
     _log.info('Using version tag: $tagName');
 
