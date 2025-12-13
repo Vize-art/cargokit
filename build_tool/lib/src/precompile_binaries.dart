@@ -9,6 +9,7 @@ import 'package:path/path.dart' as path;
 import 'artifacts_provider.dart';
 import 'builder.dart';
 import 'cargo.dart';
+import 'cleanup.dart';
 import 'options.dart';
 import 'rustup.dart';
 import 'target.dart';
@@ -26,6 +27,7 @@ class PrecompileBinaries {
     this.androidNdkVersion,
     this.androidMinSdkVersion,
     this.tempDir,
+    this.cacheDir,
     this.glibcVersion,
     this.compress = false,
   }) : assert(
@@ -43,6 +45,7 @@ class PrecompileBinaries {
   final String? androidNdkVersion;
   final int? androidMinSdkVersion;
   final String? tempDir;
+  final String? cacheDir;
   final String? glibcVersion;
   final bool compress;
 
@@ -107,12 +110,19 @@ class PrecompileBinaries {
 
     _log.info('Precompiling binaries for $targets${compress ? ' (compressed)' : ''}');
 
-    // Create temp directory for build and validation
-    final tempDir = this.tempDir != null
-        ? Directory(this.tempDir!)
-        : Directory.systemTemp.createTempSync('precompiled_');
+    // Determine build directory
+    final Directory buildDir;
+    final bool useCache = cacheDir != null;
 
-    tempDir.createSync(recursive: true);
+    if (useCache) {
+      buildDir = Directory(cacheDir!);
+    } else if (tempDir != null) {
+      buildDir = Directory(tempDir!);
+    } else {
+      buildDir = Directory.systemTemp.createTempSync('precompiled_');
+    }
+
+    buildDir.createSync(recursive: true);
 
     // Use version-based tag
     final String tagName = 'v${crateInfo.version}';
@@ -153,7 +163,7 @@ class PrecompileBinaries {
     final buildEnvironment = BuildEnvironment(
       configuration: BuildConfiguration.release,
       crateOptions: crateOptions,
-      targetTempDir: tempDir.path,
+      targetTempDir: buildDir.path,
       manifestDir: manifestDir,
       crateInfo: crateInfo,
       isAndroid: androidSdkLocation != null,
@@ -314,7 +324,11 @@ class PrecompileBinaries {
     }
 
     _log.info('Cleaning up');
-    tempDir.deleteSync(recursive: true);
+    if (useCache) {
+      await cleanupTargetDir(buildDir.path, crateInfo.packageName);
+    } else {
+      buildDir.deleteSync(recursive: true);
+    }
   }
 
   Future<void> _validateReleaseExists({

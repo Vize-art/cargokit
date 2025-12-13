@@ -148,6 +148,11 @@ class PrecompileBinariesCommand extends Command {
         abbr: "v",
         defaultsTo: false,
         help: "Enable verbose logging",
+      )
+      ..addOption(
+        'cache',
+        help: 'Directory to cache build artifacts between CI runs.\n'
+            'When set, cleans up workspace artifacts after build (keeps dependencies).',
       );
   }
 
@@ -231,6 +236,7 @@ class PrecompileBinariesCommand extends Command {
       androidNdkVersion: argResults!['android-ndk-version'] as String?,
       androidMinSdkVersion: androidMinSdkVersion,
       tempDir: argResults!['temp-dir'] as String?,
+      cacheDir: argResults!['cache'] as String?,
       glibcVersion: argResults!['glibc-version'] as String?,
       compress: compress,
     );
